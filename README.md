@@ -28,6 +28,14 @@ To replace any of those handlers, but still retain the overall functionality you
 In your handler you need to save the full register context on ISR entry into the global variable `cpustate` and
 call the appropriate high-level handler `cr_handle_*` from your code.
 
+To communicate the crash report to the outside world this library assumes the controller has been
+initialized properly and there's one UART properly set-up for communication. This library wont
+initialize the communication interface, but rather use the existing communication means. Please note,
+that the routines for doing so are called from within interrupt context. All communication must be
+done in a synchronuous fashion. If your own application port performs communication asynchronuously
+on this interface, be aware that switching over may happen at any point. In particular this
+library will clear TC IT and enable TXE IT (with TXE still pending).
+
 ## License
 
 This library was written by Benny "BenBE" Baumann and is licensed under AGPLv3.
