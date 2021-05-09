@@ -4,6 +4,7 @@
 
 #include "crashreporter/isruart.h"
 #include "crashreporter/macros.h"
+#include "crashreporter/memory.h"
 
 // Initialized by fault handlers before handing off to C implementations
 cpustate_t cpustate;
@@ -44,7 +45,8 @@ static void internal_dump_registers() {
 
     for(size_t i = 0; i < NUM_ELEMS(regnames); i++) {
         internal_dump_register(regnames[i], cpustate.reg[i]);
-        cr_uart_putc('\t');
+
+        const memory_region_t* mr_ptr = cpustate.reg[i] ? cr_mm_getRegion((const void*)cpustate.reg[i]) : NULL;
 
         switch (i) {
         case 0: case 1: case 2: case 3:
@@ -52,23 +54,57 @@ static void internal_dump_registers() {
         case 8: case 9: case 10: case 11:
         case 12:
             if(!cpustate.reg[i]) {
-                cr_uart_puts("(NULL)");
+                cr_uart_puts("\t(NULL)");
                 break;
             }
 
-            cr_uart_puts("-");
+            if(!mr_ptr) {
+                break;
+            }
+
+            cr_uart_putc('\t');
+            cr_uart_puts(mr_ptr->name);
+
+            if(!mr_ptr->bitband_source) {
+                break;
+            }
+
+            memory_bitband_source_t bbsrc = cr_mm_getBBSourceAligned((const void*)cpustate.reg[i], mr_ptr, sizeof(uint32_t));
+            if(bbsrc.ptr || bbsrc.bit) {
+                cr_uart_puts("\tAlias: ");
+                internal_dump_hex((uintptr_t)bbsrc.ptr);
+                cr_uart_puts(", bit ");
+                internal_dump_hex_v(bbsrc.bit, 2);
+
+                const memory_region_t* mr_bbs = cr_mm_getRegion(bbsrc.ptr);
+                if(mr_bbs) {
+                    cr_uart_puts(" [");
+                    cr_uart_puts(mr_bbs->name);
+                    cr_uart_puts("]");
+                }
+            }
+            break;
+
+        case 13:
+            if(mr_ptr) {
+                cr_uart_putc('\t');
+                cr_uart_puts(mr_ptr->name);
+            } else {
+                cr_uart_puts("\t(NULL)");
+            }
             break;
 
         case 14:
-            cr_uart_puts(cpustate.reg[i] & 0x01 ? "(Thumb)" : "(ARM)");
-            break;
-
         case 15:
-            if(!cpustate.reg[i]) {
-                cr_uart_puts("(NULL)");
+            if(mr_ptr) {
+                cr_uart_putc('\t');
+                cr_uart_puts(mr_ptr->name);
             } else {
-                cr_uart_puts(cpustate.reg[i] & 0x01 ? "(Thumb)" : "(ARM)");
+                cr_uart_puts("\t(NULL)");
+                break;
             }
+
+            cr_uart_puts(cpustate.reg[i] & 0x01 ? "\t(Thumb)" : "\t(ARM)");
             break;
 
         default:
