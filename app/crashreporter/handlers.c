@@ -1,5 +1,7 @@
 #include "crashreporter/handlers.h"
 
+#include <string.h>
+
 #include "version.h"
 
 #include "crashreporter/isruart.h"
@@ -234,6 +236,185 @@ static void internal_dump_stack() {
     }
 }
 
+static bool internal_dump_bt_is_call_instr(const void* ptr, size_t size) {
+    bool insn_is_thumb = !!((uintptr_t)ptr & 1);
+
+    if(insn_is_thumb) {
+        //Dealing with an Thumb branch instruction
+        uintptr_t v_ptr = (uintptr_t)ptr & ~0x01;
+        uint16_t* t_ptr = (uint16_t*)v_ptr;
+
+        switch (size) {
+        case 2:
+            // BLX (register)
+            if(
+                // Encoding T1
+                ((t_ptr[0] & 0xFF80) == 0x4780)
+            ) {
+                return true;
+            }
+            break;
+
+        case 4:
+            // BL, BLX (immediate)
+            if(
+                // Encoding T1
+                (((t_ptr[0] & 0xF800) == 0xF000) && ((t_ptr[1] & 0xF800) == 0xD000)) ||
+                // Encoding T2
+                (((t_ptr[0] & 0xF800) == 0xF000) && ((t_ptr[1] & 0xD001) == 0xC000))
+            ) {
+                return true;
+            }
+            break;
+
+        default:
+            return false;
+        }
+
+    } else {
+        //Dealing with an ARMv7 branch instruction
+        if(size != 4) {
+            return false; // Always at least 4 bytes long
+        }
+
+        uintptr_t v_ptr = (uintptr_t)ptr;
+        if((v_ptr & 0x03) != 0) {
+            return false; // Misaligned ARMv7 instruction
+        }
+
+        uint32_t* a_ptr = (uint32_t*)ptr;
+
+        // BL, BLX (immediate)
+        if(
+            // Encoding A1
+            ((a_ptr[0] & 0x0F000000) == 0x0B000000) ||
+            // Encoding A2
+            ((a_ptr[0] & 0xFE000000) == 0xFA000000)
+        ) {
+            return true;
+        }
+
+        // BLX (register)
+        if(
+            // Encoding A1
+            ((a_ptr[0] & 0x0FF000F0) == 0x01200030)
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void internal_dump_backtrace() {
+    uintptr_t reg_sp = cpustate.reg[13];
+
+    if((reg_sp & 3) != 0) {
+        cr_uart_puts("WW: Stack pointer unaligned (expecting alignment of 4). Aligning downwards.\r\n");
+        reg_sp &= ~0x03;
+    }
+
+    const memory_region_t* mr_stack = cr_mm_getRegion((uint32_t*)&_estack - 1);
+    const memory_region_t* mr_sp = cr_mm_getRegion((void*)reg_sp);
+
+    if(!mr_stack) {
+        cr_uart_puts("EE: Can't find region of initial stack address.\r\n");
+        return;
+    }
+
+    if(!mr_sp) {
+        cr_uart_puts("EE: Current stack address in unknown memory region.\r\n");
+        return;
+    }
+
+    if(0 == (mr_stack->flags & MF_READ)) {
+        cr_uart_puts("EE: Stack address in unreadable memory region.\r\n");
+        return;
+    }
+
+    if(0 == (mr_stack->flags & MF_WRITE)) {
+        cr_uart_puts("WW: Stack address in read-only memory region.\r\n");
+    }
+
+    if(mr_stack != mr_sp) {
+        cr_uart_puts("EE: Top and bottom of stack appear in different memory regions.\r\n");
+        return;
+    }
+
+    // Find possible/plausible function return addresses on the stack
+    size_t count = 0;
+    uintptr_t ptr = reg_sp;
+    uintptr_t reg_sp_end = (uintptr_t)&_estack;
+
+    if((reg_sp_end & 0x0F) != 0) {
+        cr_uart_puts("WW: End of stack not aligned on 16 byte boundary. Aligning downwards.\r\n");
+        reg_sp_end &= ~0x0F;
+    }
+
+    for(; (count < 32) && (ptr < reg_sp_end); ptr+=sizeof(uintptr_t)) {
+
+        // Get value from stack
+        uintptr_t v_ret = *(uintptr_t*)ptr;
+
+        // Determine memory target
+        const memory_region_t* mr_ret = cr_mm_getRegion((void*)v_ret);
+
+        // Unknown memory region
+        if(!mr_ret) {
+            continue;
+        }
+
+        // Pointer to non-executable memory
+        if((mr_ret->flags & MF_EXEC) == 0) {
+            continue;
+        }
+
+        // Is there a plausible branch instruction
+        bool ret_is_insn =
+            internal_dump_bt_is_call_instr((void*)(v_ret - 2), 2) ||
+            internal_dump_bt_is_call_instr((void*)(v_ret - 4), 4);
+
+        if(!ret_is_insn) {
+            continue;
+        }
+
+        bool ret_is_text = strcmp(mr_ret->name, ".text") == 0;
+
+        bool ret_is_thumb = !!(v_ret & 0x01);
+
+        cr_uart_puts("    ");
+        internal_dump_hex_v(count, 2);
+        cr_uart_puts(": ");
+        internal_dump_hex(ptr);
+        cr_uart_puts(ret_is_thumb ? " Thumb: " : " ARMv7: ");
+        cr_uart_puts(ret_is_text  ? "  " : "! ");
+
+        cr_uart_puts(mr_ret->name);
+        for(size_t i = strlen(mr_ret->name); i < 8; i++) {
+            cr_uart_putc(' ');
+        }
+
+        cr_uart_puts(" [");
+        cr_uart_putc(mr_ret->flags & MF_READ ? 'R' : '-');
+        cr_uart_putc(mr_ret->flags & MF_WRITE ? 'W' : '-');
+        cr_uart_putc(mr_ret->flags & MF_EXEC ? 'X' : '-');
+        cr_uart_putc(mr_ret->flags & MF_PERSIST ? 'P' : 'V');
+        cr_uart_puts("] ");
+
+        cr_uart_puts(" -> ");
+        internal_dump_hex(v_ret & ~0x01);
+
+        cr_uart_puts("\r\n");
+        count++;
+    }
+
+    if(ptr < reg_sp_end) {
+        cr_uart_puts("WW: Backtrace truncated.\r\n");
+    } else {
+        cr_uart_puts("II: Backtrace completed.\r\n");
+    }
+}
+
 static void internal_dump_header(const char* header) {
     cr_uart_puts("\r\n########## ");
     cr_uart_puts(header);
@@ -257,6 +438,10 @@ static void internal_dump_header(const char* header) {
 
     cr_uart_puts("Stack contents:\r\n");
     internal_dump_stack();
+    cr_uart_puts("\r\n");
+
+    cr_uart_puts("Function backtrace:\r\n");
+    internal_dump_backtrace();
     cr_uart_puts("\r\n");
 }
 
