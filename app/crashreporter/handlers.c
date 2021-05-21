@@ -6,6 +6,8 @@
 #include "crashreporter/macros.h"
 #include "crashreporter/memory.h"
 
+extern void* _estack;
+
 // Initialized by fault handlers before handing off to C implementations
 cpustate_t cpustate;
 
@@ -131,6 +133,107 @@ static void internal_dump_registers() {
     cr_uart_puts("\r\n");
 }
 
+static void internal_dump_stack() {
+    uintptr_t reg_sp = cpustate.reg[13];
+
+    if((reg_sp & 3) != 0) {
+        cr_uart_puts("WW: Stack pointer unaligned (expecting alignment of 4). Aligning downwards.\r\n");
+        reg_sp &= ~0x03;
+    }
+
+    const memory_region_t* mr_stack = cr_mm_getRegion((uint32_t*)&_estack - 1);
+    const memory_region_t* mr_sp = cr_mm_getRegion((void*)reg_sp);
+
+    if(!mr_stack) {
+        cr_uart_puts("EE: Can't find region of initial stack address.\r\n");
+        return;
+    }
+
+    if(!mr_sp) {
+        cr_uart_puts("WW: Current stack address in unknown memory region.\r\n");
+
+        // Check if we just overflowed the stack to before RAM:
+        if(reg_sp < (uintptr_t)mr_stack->offset) {
+            cr_uart_puts("WW: Current stack address before stack memory region by 0x");
+            internal_dump_hex((uintptr_t)mr_stack->offset - reg_sp);
+            cr_uart_puts(" bytes.\r\n");
+            if((uintptr_t)mr_stack->offset - reg_sp > 128) {
+                return;
+            }
+        } else {
+            cr_uart_puts("EE: Current stack address after end of stack memory region.\r\n");
+            return;
+        }
+    }
+
+    if(0 == (mr_stack->flags & MF_READ)) {
+        cr_uart_puts("EE: Stack address in unreadable memory region.\r\n");
+        return;
+    }
+
+    if(0 == (mr_stack->flags & MF_WRITE)) {
+        cr_uart_puts("WW: Stack address in read-only memory region.\r\n");
+    }
+
+    if(mr_stack != mr_sp) {
+        cr_uart_puts("WW: Top and bottom of stack appear in different memory regions.\r\n");
+    }
+
+    // Do a memory dump of the stack
+    size_t count = 0;
+    uintptr_t ptr = reg_sp & ~0x0F; // Align downwards to 16 bytes
+    uintptr_t reg_sp_end = (uintptr_t)&_estack;
+
+    if((reg_sp_end & 0x0F) != 0) {
+        cr_uart_puts("WW: End of stack not aligned on 16 byte boundary. Aligning downwards.\r\n");
+        reg_sp_end &= ~0x0F;
+    }
+
+    for(; (count < 256) && (ptr < reg_sp_end); count++, ptr++) {
+        if((ptr & 0x0F) == 0) {
+            // Print line header
+            cr_uart_puts("    ");
+            internal_dump_hex(ptr);
+            cr_uart_puts(" : ");
+        }
+
+        if(!mr_sp) {
+            // Try to fetch the memory region for the stack pointer
+            mr_sp = cr_mm_getRegion((void*)ptr);
+        }
+
+        if(ptr < reg_sp) {
+            cr_uart_puts("  ");
+        } else if(!mr_sp || ((mr_sp->flags & MF_READ) == 0)) {
+            cr_uart_puts("??");
+        } else {
+            uint8_t *v_sp = (uint8_t*)ptr;
+            internal_dump_hex_v(*v_sp, 2);
+        }
+
+        switch (ptr & 0x0F) {
+        case 0x0F:
+            cr_uart_puts("\r\n");
+            break;
+
+        case 0x0B:
+        case 0x07:
+        case 0x03:
+            cr_uart_puts("  ");
+            break;
+
+        default:
+            cr_uart_puts(" ");
+        }
+    }
+
+    if(ptr < reg_sp_end) {
+        cr_uart_puts("II: Stack content dump truncated.\r\n");
+    } else {
+        cr_uart_puts("II: Stack content dumped.\r\n");
+    }
+}
+
 static void internal_dump_header(const char* header) {
     cr_uart_puts("\r\n########## ");
     cr_uart_puts(header);
@@ -150,6 +253,10 @@ static void internal_dump_header(const char* header) {
 
     cr_uart_puts("Register contents:\r\n");
     internal_dump_registers();
+    cr_uart_puts("\r\n");
+
+    cr_uart_puts("Stack contents:\r\n");
+    internal_dump_stack();
     cr_uart_puts("\r\n");
 }
 
