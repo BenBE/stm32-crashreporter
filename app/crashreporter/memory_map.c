@@ -9,6 +9,7 @@ const memory_region_t memory_map[] = {
         .flags = MF_READ | MF_EXEC | MF_PERSIST | MF_ATOMIC,
         .name = "FLASH"
     },
+
     // RAM (rwx)       : ORIGIN = 0x20000000, LENGTH = 96K
     {
         .offset = (const void*)0x20000000,
@@ -16,6 +17,7 @@ const memory_region_t memory_map[] = {
         .flags = MF_READ | MF_WRITE | MF_EXEC | MF_ATOMIC,
         .name = "RAM1"
     },
+
     // RAM2 (rwx)      : ORIGIN = 0x10000000, LENGTH = 32K
     {
         .offset = (const void*)0x10000000,
@@ -33,7 +35,7 @@ const memory_region_t memory_map[] = {
         .name = "BB_RAM"
     },
 
-    // PERIPH (rw)     : ORIGIN = 0x20000000, LENGTH = 96K
+    // PERIPH (rw)     : ORIGIN = 0x40000000, LENGTH = 1M
     {
         .offset = (const void*)0x40000000,
         .length = 1 << 20,
@@ -41,7 +43,7 @@ const memory_region_t memory_map[] = {
         .name = "BB_PERIPH"
     },
 
-    // BB_PERIPH (rw)  : ORIGIN = 0x20000000, LENGTH = 96K
+    // BB_PERIPH (rw)  : ORIGIN = 0x42000000, LENGTH = 32M
     {
         .offset = (const void*)0x42000000,
         .length = 32 << 20,
