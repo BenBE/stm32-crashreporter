@@ -4,6 +4,7 @@
 
 #include "version.h"
 
+#include "crashreporter/dbgsym.h"
 #include "crashreporter/isruart.h"
 #include "crashreporter/macros.h"
 #include "crashreporter/memory.h"
@@ -68,6 +69,23 @@ static void internal_dump_registers() {
 
             cr_uart_putc('\t');
             cr_uart_puts(mr_ptr->name);
+
+            uint32_t sym_index = 0;
+            if(dbgsym_find_symbol(cpustate.reg[i], &sym_index)) {
+                const dbgsym_symbol_t* sym_data = dbgsym_symbol_data(sym_index);
+                const char* sym_name = dbgsym_symbol_name(sym_index);
+                if (sym_data && sym_name) {
+                    const uint32_t sym_off = cpustate.reg[i] - sym_data->addr;
+
+                    cr_uart_puts(" :: ");
+                    cr_uart_puts(sym_name);
+
+                    if (sym_off) {
+                        cr_uart_puts(" +");
+                        internal_dump_hex_v(sym_off, sym_off < 256 ? 2 : sym_off < 65536 ? 4 : 8);
+                    }
+                }
+            }
 
             if(!mr_ptr->bitband_source) {
                 break;
@@ -403,6 +421,23 @@ static void internal_dump_backtrace() {
 
         cr_uart_puts(" -> ");
         internal_dump_hex(v_ret & ~0x01);
+
+        uint32_t sym_index = 0;
+        if (dbgsym_find_symbol(v_ret & ~0x01, &sym_index)) {
+            const dbgsym_symbol_t* sym_data = dbgsym_symbol_data(sym_index);
+            const char* sym_name = dbgsym_symbol_name(sym_index);
+            if (sym_data && sym_name) {
+                const uint32_t sym_off = (v_ret & ~0x01) - sym_data->addr;
+
+                cr_uart_puts(" :: ");
+                cr_uart_puts(sym_name);
+
+                if (sym_off) {
+                    cr_uart_puts(" +");
+                    internal_dump_hex_v(sym_off, sym_off < 256 ? 2 : sym_off < 65536 ? 4 : 8);
+                }
+            }
+        }
 
         cr_uart_puts("\r\n");
         count++;
